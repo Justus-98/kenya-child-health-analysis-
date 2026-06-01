@@ -1,4 +1,4 @@
-# County-Level Spatial, Temporal, and Cluster Analysis of Under-Five Child Health Outcomes in Kenya (2021–2023)
+# Spatial-Temporal Analysis of Under-Five Child Health Outcomes in Kenya (2021–2023)
 
 ## Overview
 
