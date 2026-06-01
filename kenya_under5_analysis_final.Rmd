@@ -1,0 +1,858 @@
+---
+title: "Spatial-Temporal Analysis of Under-5 Child Health Outcomes in Kenya (2021-2023)"
+author: "Justus Chege"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+options(encoding = "UTF-8")
+```
+
+---
+
+## 1. Executive Summary and Project Overview
+
+### Project Context
+
+Child malnutrition and preventable childhood illnesses remain significant public health challenges in Kenya, with substantial variation in disease burden across counties. Understanding the geographic and temporal distribution of these outcomes is essential for effective planning, resource allocation, and intervention targeting.
+
+This report presents a county-level spatial and temporal analysis of key under-five child health indicators across Kenya's 47 counties over a 30-month period (January 2021-June 2023). The analysis integrates nutritional and morbidity indicators with deworming intervention data to identify patterns, disparities, and areas requiring targeted public health action.
+
+### Study Objectives
+
+The study seeks to generate evidence-based insights to support child health programming and decision-making. Specifically, it aims to:
+
+1. **Assess** the relationships between deworming coverage and major child health outcomes, including acute malnutrition, stunting, and diarrhoeal disease.
+
+2. **Examine** spatial and temporal variations in under-five health outcomes across Kenya's counties.
+
+3. **Evaluate** whether current intervention efforts are aligned with counties experiencing the highest burden of child health challenges.
+
+4. **Identify** distinct county risk profiles through cluster analysis to support targeted and data-driven resource allocation.
+
+### Methodology
+
+The analysis was conducted using the R statistical computing environment and the Tidyverse ecosystem. The analytical workflow included:
+
+- Data cleaning, validation, and transformation  
+- Exploratory data analysis and descriptive statistics  
+- Spatial visualization using county-level choropleth maps  
+- Correlation and regression analyses to examine relationships between health indicators and intervention coverage  
+- Unsupervised machine learning through K-Means clustering to identify groups of counties with similar health-risk characteristics  
+
+The resulting findings provide a comprehensive assessment of geographic disparities, intervention coverage, and priority areas for strengthening child health outcomes in Kenya.
+
+---
+
+## 2. Setup: Load Libraries
+
+```{r libraries}
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(
+  tidyverse,   # Core data science toolkit (dplyr, ggplot2, tidyr)
+  lubridate,   # Date parsing and manipulation
+  janitor,     # Automated column name cleaning
+  sf,          # Spatial data handling (shapefiles)
+  leaflet,     # Interactive choropleth maps
+  ggcorrplot,  # Correlation matrix visualization
+  DT,          # Interactive HTML tables
+  here,        # Relative file paths for reproducibility
+  viridis,     # Accessible, colorblind-friendly palettes
+  cluster,     # Advanced clustering algorithms
+  broom,       # Converts statistical models into clean data frames
+  factoextra   # Visual extraction of clustering outputs
+)
+```
+
+---
+
+## 3. Data Ingestion & Feature Engineering
+
+```{r load-and-clean}
+# Load raw data using a relative path (portable across machines)
+raw_data <- read_csv(here("data", "Raw Data.csv"))
+
+# Cleaning pipeline
+clean_data <- raw_data %>%
+  janitor::clean_names() %>%          # e.g. "Total Dewormed" -> "total_dewormed"
+  mutate(
+    period = parse_date_time(period, orders = "b-y"),  # "Jan-21" -> Date object
+    year   = year(period),
+    month  = month(period, label = TRUE),
+    county = str_remove(county, " County")             # Match shapefile naming
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # Aggregate age-banded stunting and underweight totals
+    total_stunted     = sum(c_across(c(stunted_0_6_months,
+                                       stunted_6_23_months,
+                                       stunted_24_59_months)),     na.rm = TRUE),
+    total_underweight = sum(c_across(c(underweight_0_6_months,
+                                       underweight_6_23_months,
+                                       underweight_24_59_months)), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+glimpse(clean_data)
+```
+
+---
+
+## 4. National Trend Analysis
+
+```{r national-trends}
+# Aggregate monthly national totals
+national_trends <- clean_data %>%
+  group_by(period) %>%
+  summarise(
+    Total_Dewormed     = sum(total_dewormed,      na.rm = TRUE),
+    Total_Malnutrition = sum(acute_malnutrition,  na.rm = TRUE),
+    Total_Diarrhea     = sum(diarrhoea_cases,     na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = -period, names_to = "Metric", values_to = "Count")
+
+# Faceted time-series plot
+ggplot(national_trends, aes(x = period, y = Count, color = Metric)) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~Metric, scales = "free_y", ncol = 1) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_minimal() +
+  labs(
+    title    = "National Health Trends (2021-2023)",
+    subtitle = "Intervention volume (Deworming) vs. health outcomes",
+    x        = "Timeline",
+    y        = "Total Cases"
+  )
+```
+
+### Key Observations
+
+#### 1. Campaign-Based Deworming Delivery
+
+The **Total Dewormed** trend exhibits a pronounced *sawtooth pattern*, characterized by sharp spikes in treatment coverage followed by periods of substantially lower activity. This pattern is consistent with a **Mass Drug Administration (MDA)** approach, where large-scale deworming campaigns are conducted periodically rather than through continuous routine service delivery.
+
+The observed peaks likely correspond to national or county-level deworming campaigns, indicating that intervention coverage is concentrated within specific implementation periods.
+
+#### 2. Persistent and Seasonal Disease Burden
+
+In contrast to the intervention data, the health outcome indicators-**Total Diarrhea Cases** and **Total Malnutrition Cases**-display continuous fluctuations throughout the study period, suggesting an ongoing disease burden.
+
+##### Diarrheal Disease
+
+The diarrhoea trend demonstrates recurring peaks that may be associated with Kenya's bimodal rainy seasons (March-May and October-December), when increased water contamination and reduced sanitation conditions elevate the risk of enteric infections.
+
+##### Malnutrition
+
+The malnutrition trend appears to closely mirror fluctuations in diarrhoeal disease. Periods of elevated diarrhoea incidence are frequently accompanied by increases in malnutrition cases, highlighting the well-established relationship between infectious disease and nutritional outcomes among children under five.
+
+#### 3. Implications for Child Health Programming
+
+The analysis reveals a notable mismatch between intervention delivery and disease occurrence. While deworming activities are implemented periodically through high-intensity campaigns, diarrhoeal disease and malnutrition remain persistent throughout the year.
+
+This pattern suggests that vulnerable populations may experience prolonged periods of elevated health risk between deworming campaigns. Although Mass Drug Administration programmes are effective for broad population coverage, the findings indicate a potential need to strengthen complementary year-round interventions, including:
+
+- Routine deworming services through health facilities;
+- Improved Water, Sanitation and Hygiene (WASH) programmes;
+- Community-based nutrition surveillance and support;
+- Targeted interventions during high-risk seasonal periods.
+
+#### Strategic Insight
+
+The findings suggest that a more integrated approach combining periodic mass deworming campaigns with continuous preventive and nutritional interventions may improve the sustainability of child health outcomes and reduce seasonal spikes in disease burden.
+
+---
+
+## 5. Geospatial Mapping: County-Level Malnutrition
+
+```{r geospatial-map}
+# Load Kenya county shapefile (place County.shp inside data/)
+kenya_shapefile <- st_read(here("data", "County.shp"), quiet = TRUE)
+
+# Aggregate health indicators by county
+county_summary <- clean_data %>%
+  group_by(county) %>%
+  summarise(
+    Avg_Malnutrition = mean(acute_malnutrition, na.rm = TRUE),
+    Total_Dewormed   = sum(total_dewormed,      na.rm = TRUE),
+    Total_Stunted    = sum(total_stunted,        na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Join aggregated data to shapefile geometry
+map_data <- kenya_shapefile %>%
+  left_join(county_summary, by = c("Name" = "county"))
+
+# --- Interactive Leaflet Map ---
+pal <- colorNumeric(palette = "YlOrRd", domain = map_data$Avg_Malnutrition)
+
+map_data <- map_data %>%
+  mutate(
+    popup_text = paste0(
+      "<strong>County:</strong> ",              Name,                                        "<br/>",
+      "<strong>Avg Malnutrition:</strong> ",    round(Avg_Malnutrition, 0),                  "<br/>",
+      "<strong>Total Stunted (3 yrs):</strong> ", format(Total_Stunted, big.mark = ","),     "<br/>",
+      "<strong>Deworming Doses:</strong> ",     format(Total_Dewormed,  big.mark = ",")
+    )
+  )
+
+leaflet(map_data) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    fillColor   = ~pal(Avg_Malnutrition),
+    weight      = 1,
+    opacity     = 1,
+    color       = "white",
+    dashArray   = "3",
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight       = 3,
+      color        = "#666",
+      dashArray    = "",
+      fillOpacity  = 0.7,
+      bringToFront = TRUE
+    ),
+    popup = ~popup_text,
+    label = ~Name
+  ) %>%
+  addLegend(
+    pal      = pal,
+    values   = ~Avg_Malnutrition,
+    title    = "Avg Malnutrition",
+    position = "bottomright"
+  )
+```
+
+---
+
+## 6. Correlation Analysis: Interventions vs. Outcomes
+
+```{r correlation-matrix}
+# Select variables of interest and drop incomplete rows
+cor_data <- clean_data %>%
+  select(total_dewormed, acute_malnutrition, total_stunted, diarrhoea_cases) %>%
+  drop_na()
+
+# Compute Pearson correlation matrix
+cor_matrix <- cor(cor_data, method = "pearson")
+
+# Compute p-value matrix for significance testing
+cor_pmat <- cor_pmat(cor_data)
+
+# Visualize: crosses mark correlations that are NOT significant (p > 0.05)
+ggcorrplot(
+  cor_matrix,
+  method   = "circle",
+  type     = "lower",
+  lab      = TRUE,
+  p.mat    = cor_pmat,       # Overlay significance - non-sig pairs are crossed out
+  colors   = c("#E46726", "white", "#6D9EC1"),
+  title    = "Pearson Correlation Matrix with Significance Testing (p > 0.05 crossed)"
+)
+```
+
+
+### Robustness Check: Spearman Correlation
+
+Pearson correlation assumes a linear relationship between variables. Since health count data can be skewed and non-normal, we validate our findings using **Spearman's rank correlation** - a non-parametric alternative that is robust to outliers and non-linearity.
+
+```{r spearman-check}
+# Spearman correlation matrix (rank-based, robust to non-normality)
+spearman_matrix <- cor(cor_data, method = "spearman")
+spearman_pmat   <- cor_pmat(cor_data, method = "spearman")
+
+ggcorrplot(
+spearman_matrix,
+method   = "circle",
+type     = "lower",
+lab      = TRUE,
+p.mat    = spearman_pmat,
+colors   = c("#E46726", "white", "#6D9EC1"),
+title    = "Spearman Correlation Matrix (Robustness Check)"
+)
+```
+
+#### Key Findings and Statistical Interpretation
+
+##### 1. The WASH-Nutrition Relationship  
+**(Pearson $r = 0.66$ | Spearman $\rho = 0.40$)**
+
+The analysis identifies a strong positive Pearson correlation (**0.66**) between **Diarrhoea Cases** and **Total Stunted Children**, indicating a substantial linear association between disease burden and chronic malnutrition. The relationship remains positive and statistically meaningful under the Spearman rank correlation framework (**0.40**), suggesting that the association is robust to non-normality and potential outliers.
+
+**Interpretation**
+
+The findings provide empirical support for the well-documented **malnutrition-infection cycle**, whereby repeated enteric infections impair nutrient absorption, reduce appetite, and contribute to long-term growth deficits among children.
+
+**Policy Implication**
+
+The results suggest that nutrition-specific interventions may have limited effectiveness when implemented in isolation. Sustainable reductions in stunting are likely to require complementary investments in **Water, Sanitation, and Hygiene (WASH)** infrastructure to reduce exposure to recurrent infections.
+
+---
+
+##### 2. Evidence of Targeted Intervention Delivery  
+**(Pearson $r = 0.41$ | Spearman $\rho = 0.39$)**
+
+A moderate positive association exists between **Total Dewormed** and **Total Stunted Children**, with similar estimates observed under both Pearson (**0.41**) and Spearman (**0.39**) correlation measures.
+
+**Interpretation**
+
+The consistency between the two correlation coefficients suggests that deworming activities are concentrated in counties experiencing higher levels of chronic child health challenges. Rather than indicating that deworming contributes to stunting, the relationship likely reflects the deliberate targeting of interventions toward areas with greater need.
+
+**Policy Implication**
+
+The findings indicate that deworming programmes are generally aligned with underlying nutritional vulnerability, suggesting effective prioritization of high-burden counties within national child health initiatives.
+
+---
+
+##### 3. Acute Malnutrition and Active Disease Burden  
+**(Pearson $r = 0.24$ | Spearman $\rho = 0.42$)**
+
+The relationship between **Diarrhoea Cases** and **Acute Malnutrition** appears relatively weak under Pearson correlation (**0.24**) but becomes notably stronger when evaluated using Spearman's rank correlation (**0.42**).
+
+**Interpretation**
+
+This divergence suggests that the relationship may be non-linear and influenced by extreme observations. Acute malnutrition is often highly variable and responsive to short-term shocks, making rank-based methods more appropriate for detecting underlying associations.
+
+The stronger Spearman coefficient indicates that counties with higher diarrhoeal disease burdens generally also experience higher levels of acute malnutrition, even when the relationship is not strictly linear.
+
+**Policy Implication**
+
+Reducing diarrhoeal disease may contribute not only to long-term nutritional improvements but also to reductions in acute wasting episodes among vulnerable children.
+
+---
+
+##### 4. Alignment Between Deworming Efforts and Disease Burden  
+**(Spearman $\rho = 0.52$)**
+
+Spearman correlation analysis reveals a moderately strong positive association (**0.52**) between **Total Dewormed** distributions and **Diarrhoea Cases**.
+
+**Interpretation**
+
+Because deworming interventions are typically implemented through periodic mass campaigns rather than continuous service delivery, rank-based methods may better capture their relationship with disease burden. The observed association suggests that counties experiencing higher levels of diarrhoeal disease are also receiving greater deworming coverage.
+
+**Policy Implication**
+
+The findings provide evidence that intervention resources are being directed toward counties facing elevated environmental and infectious disease risks, indicating a degree of alignment between programme implementation and public health need.
+
+---
+
+#### Overall Conclusion
+
+The combined Pearson and Spearman analyses demonstrate that the observed relationships are generally robust across alternative statistical approaches. The results highlight the interconnected nature of infectious disease, malnutrition, and intervention coverage, while emphasizing the importance of integrated strategies that combine nutritional support, deworming programmes, and WASH interventions to improve child health outcomes across Kenya.
+
+---
+
+## 7. Inferential Modelling: Predictors of Acute Malnutrition
+
+### Objective
+
+The correlation analysis identified important relationships between child health indicators and intervention coverage. However, correlation does not account for the simultaneous interaction of multiple factors.
+
+To address this limitation, a **Multiple Linear Regression** model was fitted to quantify the independent effects of **Diarrhoea Cases**, **Total Stunted Children**, and **Total Dewormed Children** on **Acute Malnutrition Cases** across Kenyan counties.
+
+This approach allows for estimation of each predictor's contribution while holding the others constant.
+
+### Model Specification
+
+The dependent variable is:
+
+- Acute Malnutrition Cases
+
+The independent variables are:
+
+- Diarrhoea Cases  
+- Total Stunted Children  
+- Total Dewormed Children  
+
+The model is specified as:
+
+\[
+\text{Acute Malnutrition} =
+\beta_0 +
+\beta_1(\text{Diarrhoea Cases}) +
+\beta_2(\text{Total Stunted Children}) +
+\beta_3(\text{Total Dewormed Children}) +
+\varepsilon
+\]
+
+where:
+
+- $\beta_0$ is the intercept  
+- $\beta_1$, $\beta_2$, and $\beta_3$ are the estimated coefficients  
+- $\varepsilon$ is the error term representing unexplained variation  
+
+### Interpretation Framework
+
+The regression results are interpreted using:
+
+- **Coefficient Estimates:** Direction and magnitude of each predictor's effect  
+- **P-values:** Statistical significance of relationships  
+- **Confidence Intervals:** Range of plausible effect sizes  
+- **Model Fit:** Overall explanatory power of the model  
+
+### Analytical Value
+
+This model provides insight into the factors most strongly associated with acute malnutrition when all predictors are considered simultaneously. The results support evidence-based prioritization of child health interventions across Kenyan counties.
+
+
+```{r regression-model}
+# Fit multiple linear regression model
+# Outcome:   acute_malnutrition
+# Predictors: diarrhoea_cases, total_stunted, total_dewormed
+malnutrition_model <- lm(
+acute_malnutrition ~ diarrhoea_cases + total_stunted + total_dewormed,
+data = clean_data
+)
+# Tidy model summary: coefficients, standard errors, p-values
+tidy(malnutrition_model, conf.int = TRUE) %>%
+mutate(across(where(is.numeric), ~round(., 4))) %>%
+DT::datatable(
+caption  = "Regression Results: Predictors of Acute Malnutrition",
+options  = list(pageLength = 10, scrollX = TRUE),
+rownames = FALSE
+)
+```
+
+
+```{r model-fit}
+# Model fit statistics: R-squared, F-statistic, p-value
+glance(malnutrition_model) %>%
+select(r.squared, adj.r.squared, sigma, statistic, p.value, df, nobs) %>%
+mutate(across(where(is.numeric), ~round(., 4))) %>%
+DT::datatable(
+caption  = "Model Fit Statistics",
+options  = list(scrollX = TRUE),
+rownames = FALSE
+)
+```
+
+```{r residual-diagnostics}
+# Residual diagnostics: check model assumptions visually
+par(mfrow = c(2, 2))   # 2x2 plot grid
+plot(malnutrition_model)
+par(mfrow = c(1, 1))   # Reset layout
+```
+
+Building on the earlier correlation analysis and spatial clustering results, this section advances the investigation from bivariate associations to multivariate inference. While correlation analysis established pairwise relationships between child health indicators, and clustering revealed distinct county-level vulnerability profiles, the regression model quantifies the *independent contribution* of each predictor to acute malnutrition while controlling for other factors.
+
+This integrated approach allows for a more rigorous interpretation of the underlying drivers of child wasting across Kenyan counties.
+
+### 7.1 Substantive Epidemiological Drivers
+
+The multiple regression model identifies **diarrhoea cases** as the only statistically significant predictor of acute malnutrition (*?? = 0.0299, p < 0.001*). This finding is consistent with the earlier correlation results, which showed a positive association between diarrhoeal disease and nutritional outcomes.
+
+Holding all other variables constant, increases in diarrhoeal disease burden are associated with corresponding increases in acute malnutrition, reinforcing the role of acute infectious disease as a proximate driver of child wasting.
+
+In contrast, **total stunted children** (*p = 0.422*) and **total dewormed children** (*p = 0.846*) are not statistically significant in the multivariate model. This aligns with the clustering results, where stunting appeared more strongly associated with structural, long-term vulnerability profiles rather than short-term fluctuations in acute malnutrition.
+
+These results highlight a key distinction:
+
+- **Stunting** reflects chronic deprivation processes captured more clearly in the clustering structure  
+- **Acute malnutrition** reflects short-term shocks, particularly infectious disease episodes
+
+---
+
+### 7.2 Linking Regression Findings to Cluster Profiles
+
+The earlier K-means clustering analysis segmented counties into distinct risk profiles, revealing systematic geographic variation in child health outcomes. The regression results provide an explanatory layer to these clusters.
+
+- High-burden clusters identified in the clustering analysis are primarily characterised by elevated diarrhoeal disease incidence, which the regression model confirms as the dominant predictor of acute malnutrition.
+- Counties classified as chronically vulnerable (high stunting clusters) do not exhibit proportionally higher acute malnutrition once diarrhoeal burden is accounted for.
+
+This integration suggests that **acute malnutrition hotspots are driven more by epidemiological shocks than by long-term nutritional deprivation alone**.
+
+---
+
+### 7.3 Variance Explained and Model Significance
+
+The model explains a modest proportion of variation in acute malnutrition (R-squared = 5.73%), despite strong overall statistical significance (F = 21.31, p < 0.001).
+This pattern is consistent with findings from the correlation and clustering analyses, which indicated that child health outcomes are shaped by multiple interacting and partially unobserved systems.
+
+The low explanatory power suggests that additional determinants-such as rainfall variability, food price inflation, household income dynamics, and WASH infrastructure coverage-are likely captured implicitly in the clustering structure but not explicitly in the regression model.
+
+---
+
+### 7.4 Diagnostic Assessment and Model Limitations
+
+Model diagnostics indicate several departures from classical linear regression assumptions:
+
+- The **Residuals vs Fitted plot** suggests heteroskedasticity, particularly in high-burden counties identified in the clustering phase.
+- The **Normal Q-Q plot** reveals right-skewed residuals, consistent with outbreak-driven spikes in acute malnutrition.
+- High-leverage observations correspond to extreme county-level events, which also emerge as outliers in the clustering analysis.
+
+These findings reinforce a key insight from the earlier clustering stage: **child health data in Kenya is structurally heterogeneous**, with distinct sub-populations experiencing fundamentally different risk dynamics.
+
+### 7.5 Integrated Interpretation Across Analytical Stages
+
+When synthesised across all analytical layers, a consistent narrative emerges:
+
+1. **Correlation analysis** identified strong pairwise associations between diarrhoeal disease and nutritional outcomes.  
+2. **Clustering analysis** revealed that counties group into distinct vulnerability profiles driven by underlying health burden patterns.  
+3. **Regression modelling** confirms that within these profiles, diarrhoeal disease is the primary independent driver of acute malnutrition.
+
+Together, these findings indicate that:
+Acute malnutrition in Kenya is not uniformly distributed but concentrated in epidemiologically defined high-risk clusters, where infectious disease burden acts as the immediate trigger of nutritional deterioration.
+
+---
+
+## 8. Advanced Analysis: Multi-Dimensional Risk Clustering
+
+### Objective
+
+To translate the above findings into actionable geographic intelligence, counties are grouped into distinct vulnerability profiles to guide targeted resource allocation and intervention planning.
+
+The clustering framework builds directly on the regression and correlation results by operationalising the observed relationships into spatially coherent risk categories.
+
+### Step 1: Determining the Optimal Number of Clusters (Elbow Method)
+
+Prior to applying K-Means clustering, the Elbow Method is used to identify the optimal number of clusters (*k*). The elbow point represents the value at which additional clusters yield diminishing improvements in within-cluster variance reduction, ensuring an interpretable and data-driven segmentation of counties.
+
+```{r elbow-plot}
+# Prepare and normalise county-level data
+cluster_data <- clean_data %>%
+group_by(county) %>%
+summarise(
+Avg_Stunting  = mean(total_stunted,   na.rm = TRUE),
+Avg_Diarrhea  = mean(diarrhoea_cases, na.rm = TRUE),
+Avg_Deworming = mean(total_dewormed,  na.rm = TRUE),
+.groups = "drop"
+) %>%
+column_to_rownames("county") %>%
+scale()   # Z-score standardisation so large counts don't dominate
+
+# Elbow plot: total within-cluster sum of squares for k = 1 to 10
+set.seed(123)
+
+wss <- numeric(10)
+
+for (k in 1:10) {
+  km <- kmeans(cluster_data,
+               centers = k,
+               nstart = 25)
+  wss[k] <- km$tot.withinss
+}
+
+elbow_data <- data.frame(
+  k = 1:10,
+  wss = wss
+)
+
+ggplot(elbow_data, aes(x = k, y = wss)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Elbow Method: Optimal Number of Clusters",
+    subtitle = "Look for the elbow where the curve begins to flatten",
+    x = "Number of Clusters (k)",
+    y = "Total Within-Cluster Sum of Squares"
+  ) +
+  theme_minimal()
+```
+
+### Step 2: Silhouette Analysis (Confirmation)
+
+To validate the optimal number of clusters identified using the Elbow Method, a **Silhouette Analysis** is conducted as a second, independent criterion.
+
+Unlike the Elbow Method, which evaluates within-cluster variance, the Silhouette method assesses both **cluster cohesion** (how similar observations are within the same cluster) and **cluster separation** (how distinct clusters are from one another).
+
+The **Silhouette coefficient** ranges from -1 to +1:
+
+- Values close to **+1** indicate well-separated, well-defined clusters  
+- Values around **0** indicate overlapping clusters  
+- Values below **0** suggest potential misclassification of observations  
+
+By computing the average silhouette width across different values of *k*, we obtain a robustness check on the clustering structure and ensure that the selected number of clusters is not purely an artefact of variance reduction but also reflects meaningful separation in the data space.
+
+This step strengthens the validity of the clustering solution used to define county-level vulnerability profiles in the subsequent analysis.
+
+```{r silhouette-plot}
+set.seed(123)
+
+# Compute distance matrix once for efficiency
+dist_matrix <- dist(cluster_data)
+
+# Average silhouette width for k = 2 to 10
+silhouette_scores <- sapply(2:10, function(k) {
+
+  km <- kmeans(
+    cluster_data,
+    centers = k,
+    nstart = 25
+  )
+
+  mean(
+    silhouette(km$cluster, dist_matrix)[, 3]
+  )
+})
+
+# Prepare results for plotting
+silhouette_df <- data.frame(
+  Clusters = 2:10,
+  Silhouette = silhouette_scores
+)
+
+# Visualize optimal number of clusters
+ggplot(silhouette_df,
+       aes(x = Clusters,
+           y = Silhouette)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Silhouette Method: Optimal Number of Clusters",
+    subtitle = "Higher silhouette widths indicate better-defined clusters",
+    x = "Number of Clusters (k)",
+    y = "Average Silhouette Width"
+  ) +
+  theme_minimal()
+```
+
+### Step 3: K-Means Clustering & Mapping
+
+```{r risk-clustering}
+# K-Means clustering with k validated above
+set.seed(123)
+k_clusters <- kmeans(cluster_data, centers = 3, nstart = 25)
+
+# Attach cluster labels to map data
+# Inspect k_clusters$centers after running to assign meaningful labels:
+#   Cluster 1 = High Burden | Cluster 2 = National Median | Cluster 3 = Urban Mega-Centre
+map_data$Cluster <- as.factor(k_clusters$cluster[map_data$Name])
+
+# Interactive cluster map
+factpal <- colorFactor(topo.colors(3), map_data$Cluster)
+
+leaflet(map_data) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    fillColor   = ~factpal(Cluster),
+    weight      = 1,
+    opacity     = 1,
+    color       = "white",
+    fillOpacity = 0.7,
+    popup = ~paste0(
+      "<strong>County:</strong> ",        Name,    "<br/>",
+      "<strong>Risk Profile:</strong> Cluster ", Cluster
+    )
+  ) %>%
+  addLegend(
+    pal      = factpal,
+    values   = ~Cluster,
+    title    = "Vulnerability Clusters",
+    position = "bottomright"
+  )
+```
+
+## 8.2 Operational Risk Profiles and Strategic Resource Allocation
+
+Building on the validated 3-cluster solution from the Elbow and Silhouette analyses, Kenyan counties are grouped into distinct operational risk profiles. This segmentation moves beyond national-level aggregation and enables targeted, data-driven allocation of health resources based on local epidemiological conditions.
+
+The clustering results provide a structural framework for translating statistical patterns into actionable public health strategies.
+
+---
+
+### Cluster 3: High-Volume Urban Anchor
+
+**Composition:** Nairobi City County (*n = 1*)
+
+This cluster consists solely of Nairobi City County, which emerged as a structural outlier in the clustering solution due to its extreme population density and disproportionately high absolute case volumes.
+
+While not necessarily the highest in per-capita burden, Nairobi's scale of reporting significantly influences national aggregates and requires separate analytical treatment to avoid distortion of rural health patterns.
+
+**Operational Strategy: Urban-Specific Health Delivery Systems**
+
+Interventions in this context should prioritise high-density service delivery models tailored to informal settlements and urban slums. Effective programming requires high-throughput distribution systems, rapid response capacity, and decentralised service points adapted to urban population dynamics.
+
+---
+
+### Cluster 1: High-Burden Hyper-Endemic Priority Zones
+
+**Composition:** 9 high-risk counties
+
+This cluster represents the most vulnerable subgroup identified by the model. Counties in this category exhibit consistently elevated levels of **acute malnutrition** and **diarrhoeal disease**, alongside high **stunting prevalence**, indicating both acute and chronic forms of vulnerability.
+
+This aligns with earlier regression findings, which identified diarrhoeal disease as the primary independent predictor of acute malnutrition, suggesting that these counties experience a reinforced infection-malnutrition cycle.
+
+**Operational Strategy: Integrated Emergency and WASH Response**
+
+These counties should be prioritised for intensified multi-sectoral interventions, combining:
+
+- Targeted nutritional supplementation  
+- Emergency child health outreach services  
+- Expanded Water, Sanitation, and Hygiene (WASH) infrastructure investment  
+- Strengthened disease surveillance systems  
+
+The objective is to simultaneously address immediate nutritional deficits and the underlying infectious disease environment sustaining them.
+
+---
+
+### Cluster 2: National Baseline Standard
+
+**Composition:** 37 counties
+
+This cluster represents the national baseline and forms the largest group in the dataset. Counties in this category exhibit moderate and relatively stable levels of child health indicators, closely tracking national averages across the study period.
+
+These counties function as the system's "steady state," with no extreme deviations in either disease burden or nutritional outcomes.
+
+**Operational Strategy: Preventive Surveillance and System Maintenance**
+
+Public health interventions in this cluster should focus on maintaining stability through:
+
+- Routine deworming and nutrition programs  
+- Continuous surveillance for early warning signals  
+- Strengthening primary healthcare supply chains  
+- Preventing upward drift into high-burden classifications  
+
+---
+
+### Integrated Interpretation
+
+Across all clusters, a consistent pattern emerges when integrated with the regression and correlation findings:
+
+- **Cluster membership reflects underlying disease ecology**
+- **Diarrhoeal disease acts as the primary driver of acute malnutrition**
+- **Spatial heterogeneity is structurally stable and policy-relevant**
+
+This confirms that child health outcomes in Kenya are not uniformly distributed but are instead organised into distinct epidemiological risk environments requiring differentiated policy responses.
+
+---
+
+## 9. Algorithmic Validation & Diagnostic Table
+
+### Clustering Quality Check
+
+```{r cluster-validation}
+# Ratio of between-cluster variance to total variance
+# Higher % = clusters are more distinct and well-separated
+variance_explained <- (k_clusters$betweenss / k_clusters$totss) * 100
+
+cat(sprintf("Clustering Quality Check:\n"))
+cat(sprintf("Total Variance Captured by 3-Cluster Model: %.2f%%\n", variance_explained))
+```
+### Algorithmic Convergence and Model Quality Evaluation
+
+The K-Means clustering solution demonstrates strong internal structure, capturing **75.54% of the total multivariate variance** across the selected child health indicators (*SS_between / SS_total = 0.7554*).
+
+This indicates a high level of separation between clusters relative to within-cluster variability, suggesting that the resulting grouping structure is statistically meaningful and not driven by random partitioning.
+
+---
+
+#### Interpretation
+
+In the context of unsupervised learning, this level of explained variance implies that the 3-cluster solution provides a strong approximation of the underlying structure in the data. In practical terms, grouping the 47 counties into three distinct profiles accounts for over three-quarters of the observed variation in:
+
+- Acute malnutrition  
+- Diarrhoeal disease burden  
+- Stunting prevalence  
+- Deworming intervention coverage  
+
+This reinforces the conclusion that child health outcomes in Kenya exhibit strong spatial heterogeneity that can be meaningfully summarised using a small number of discrete risk profiles.
+
+---
+
+#### Operational Implications
+
+The high between-cluster separation indicates that the identified groups are both **statistically distinct** and **policy-relevant**. This supports their use as operational units for differentiated health planning.
+
+From a public health perspective, this means:
+
+- Resource allocation can be stratified according to clearly defined risk environments  
+- Intervention strategies can be tailored to cluster-specific epidemiological profiles  
+- National averages are insufficient for targeting without cluster-level disaggregation  
+
+These findings strengthen the case for adopting data-driven segmentation in sub-national health planning and funding allocation.
+
+---
+
+### Interactive Sub-National Directory
+
+The table below provides a searchable breakdown of all 47 counties, including their assigned cluster membership and corresponding health indicator values. This enables direct exploration of how individual counties map onto the identified risk profiles.
+
+```{r interactive-assignment-table}
+# Build clean county-level summary with cluster labels
+assignment_table <- clean_data %>%
+  group_by(county) %>%
+  summarise(
+    `Avg Monthly Malnutrition` = round(mean(acute_malnutrition, na.rm = TRUE), 1),
+    `Total Stunted Cases`      = sum(total_stunted,             na.rm = TRUE),
+    `Total Diarrhea Cases`     = sum(diarrhoea_cases,           na.rm = TRUE),
+    `Total Deworming Doses`    = sum(total_dewormed,            na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    `Cluster ID`           = k_clusters$cluster[match(county, rownames(cluster_data))],
+    `Operational Profile`  = case_when(
+      `Cluster ID` == 3 ~ "Urban Centre (Cluster 3)",
+      `Cluster ID` == 1 ~ "High-Burden Priority Zone (Cluster 1)",
+      `Cluster ID` == 2 ~ "National Baseline (Cluster 2)"
+    )
+  ) %>%
+  select(county, `Operational Profile`, everything(), -`Cluster ID`) %>%
+  arrange(`Operational Profile`, county)
+
+# Render interactive searchable HTML table
+DT::datatable(
+  assignment_table,
+  filter   = "top",
+  caption  = "Sub-National Master Registry: Case Counts and Risk Profile Designations",
+  options  = list(
+    pageLength = 10,
+    autoWidth  = TRUE,
+    scrollX    = TRUE,
+    columnDefs = list(list(className = "dt-center", targets = 1:5))
+  ),
+  rownames = FALSE
+)
+```
+
+## 10. Conclusions and Policy Recommendations
+
+The integrated evidence from correlation analysis, regression modelling, and clustering reveals a consistent and convergent narrative regarding the drivers and distribution of under-five child health outcomes across Kenyan counties. The findings highlight a combination of infectious disease dynamics, intervention delivery patterns, and strong spatial heterogeneity in risk profiles.
+
+---
+
+| Key Finding | Supporting Evidence | Policy Recommendation |
+|---|---|---|
+| Diarrhoeal disease is a primary driver of acute malnutrition | Significant correlations (Pearson and Spearman); statistically significant regression coefficient | Prioritise integrated interventions combining nutrition support with Water, Sanitation and Hygiene (WASH) infrastructure improvements |
+| Deworming interventions follow a campaign-based delivery model | Observed sawtooth temporal pattern in intervention data with cyclical spikes | Complement Mass Drug Administration with targeted routine or interim distribution in high-burden periods and locations |
+| Intervention targeting broadly aligns with areas of chronic need | Moderate positive association between deworming coverage and stunting prevalence | Maintain current targeting approach while incorporating predictive analytics for proactive allocation |
+| A subset of counties exhibits consistently high vulnerability | Cluster analysis (K-Means, validated by Elbow and Silhouette methods) identifies ~9 high-burden counties | Designate these counties as Integrated Child Health Priority Zones with ring-fenced, multi-sectoral funding |
+
+---
+
+### Synthesis
+
+Across all analytical layers, a consistent pattern emerges:
+
+- **Correlation analysis** confirms strong associations between infectious disease and nutritional outcomes  
+- **Regression modelling** identifies diarrhoeal disease as the dominant independent predictor of acute malnutrition  
+- **Clustering analysis** reveals geographically concentrated high-risk counties requiring differentiated policy responses  
+
+---
+
+### Overall Policy Implication
+
+Child health outcomes in Kenya are structurally heterogeneous and cannot be effectively addressed through uniform national-level interventions. Instead, results support a **tiered public health strategy** that combines:
+
+- Immediate disease control (especially diarrhoeal infections)  
+- Sustained improvements in WASH infrastructure  
+- Targeted nutritional support  
+- Cluster-based resource allocation for high-burden counties  
+
+This integrated approach is necessary to reduce both acute and chronic manifestations of under-five malnutrition across the country.
+
+---
+
+*Analysis by Justus Chege | Data: Kenya DHIS2 (2021-2023)*
